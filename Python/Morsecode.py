@@ -1,3 +1,9 @@
+import serial
+import threading
+import time
+
+SERIAL_PORT = 'COM3'  
+BAUD_RATE = 9600      
 
 MORSE_CODE_DICT = {
     'A': '.-', 'B': '-...', 'C': '-.-.', 'D': '-..', 'E': '.', 'F': '..-.',
@@ -44,20 +50,64 @@ def morse_to_text(morse):
     return ' '.join(words)
 
 
+def listen_from_arduino(ser):
+    """Background thread that reads tapped Morse symbols and decodes them."""
+    morse_buffer = ""
+    while True:
+        try:
+            if ser.in_waiting > 0:
+                char = ser.read(1).decode('utf-8', errors='ignore')
+                
+                if char in ['.', '-']:
+                    morse_buffer += char
+                elif char == ' ':
+                    # 360ms letter gap received from Arduino
+                    if morse_buffer:
+                        try:
+                            decoded = morse_to_text(morse_buffer)
+                            print(decoded, end='', flush=True)
+                        except ValueError:
+                            print('?', end='', flush=True)
+                        morse_buffer = ""
+                elif char == '/':
+                    # 840ms word gap received from Arduino
+                    print(' ', end='', flush=True)
+        except serial.SerialException:
+            print("\n[Serial connection lost]")
+            break
+        time.sleep(0.01)
+
+
 if __name__ == "__main__":
-    print("Morse Code Translator")
-    print("1. English to Morse")
-    print("2. Morse to English")
-    choice = input("Choose a direction (1 or 2): ").strip()
-    user_input = input("Enter the message to translate: ")
+    try:
+        ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=0.1)
+        time.sleep(2)  # Wait for Arduino auto-reset
+    except serial.SerialException as e:
+        print(f"Could not open {SERIAL_PORT}: {e}")
+        exit(1)
+
+    print("=== Full-Duplex Morse Code Telegraph ===")
+    print("Type English and press Enter to beep/blink on Arduino.")
+    print("Tap the physical button on Pin D2 to decode text here.\n")
+
+    # Start background listener thread for full-duplex operation
+    listener = threading.Thread(target=listen_from_arduino, args=(ser,), daemon=True)
+    listener.start()
 
     try:
-        if choice == '1':
-            translated_message = text_to_morse(user_input)
-        elif choice == '2':
-            translated_message = morse_to_text(user_input)
-        else:
-            raise ValueError("Choose 1 for English to Morse or 2 for Morse to English.")
-        print("Translation:", translated_message)
-    except ValueError as error:
-        print("Translation error:", error)
+        while True:
+            user_input = input()
+            if user_input.strip().lower() == 'exit':
+                break
+            try:
+                # Encode using your dictionary so punctuation works seamlessly
+                morse_out = text_to_morse(user_input)
+                print(f"[TX Morse]: {morse_out}")
+                ser.write((morse_out + '\n').encode('utf-8'))
+            except ValueError as error:
+                print(f"[Translation error]: {error}")
+    except KeyboardInterrupt:
+        pass
+    finally:
+        ser.close()
+        print("\nDisconnected.")
